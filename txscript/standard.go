@@ -57,6 +57,7 @@ const (
 	ScriptHashTy                             // Pay to script hash.
 	WitnessV0ScriptHashTy                    // Pay to witness script hash.
 	MultiSigTy                               // Multi signature.
+	PubKeyHashWithAssetTy                    // Pay pubkey hash with asset.
 	NullDataTy                               // Empty data-only (provably prunable).
 )
 
@@ -70,6 +71,7 @@ var scriptClassToName = []string{
 	ScriptHashTy:          "scripthash",
 	WitnessV0ScriptHashTy: "witness_v0_scripthash",
 	MultiSigTy:            "multisig",
+	PubKeyHashWithAssetTy: "pubkeyhash_with_asset",
 	NullDataTy:            "nulldata",
 }
 
@@ -138,6 +140,18 @@ func isMultiSig(pops []parsedOpcode) bool {
 	return true
 }
 
+// isPubKeyHashWithAsset returns true if the script passed is a pay-to-pubkey-hash
+// with asset transaction, false otherwise.
+func isPubKeyHashWithAsset(pops []parsedOpcode) bool {
+	return len(pops) > 5 &&
+		pops[0].opcode.value == OP_DUP &&
+		pops[1].opcode.value == OP_HASH160 &&
+		pops[2].opcode.value == OP_DATA_20 &&
+		pops[3].opcode.value == OP_EQUALVERIFY &&
+		pops[4].opcode.value == OP_CHECKSIG &&
+		pops[5].opcode.value == 0xc0
+}
+
 // isNullData returns true if the passed script is a null data transaction,
 // false otherwise.
 func isNullData(pops []parsedOpcode) bool {
@@ -171,6 +185,8 @@ func typeOfScript(pops []parsedOpcode) ScriptClass {
 		return WitnessV0ScriptHashTy
 	} else if isMultiSig(pops) {
 		return MultiSigTy
+	} else if isPubKeyHashWithAsset(pops) {
+		return PubKeyHashWithAssetTy
 	} else if isNullData(pops) {
 		return NullDataTy
 	}
@@ -221,6 +237,9 @@ func expectedInputs(pops []parsedOpcode, class ScriptClass) int {
 		// additional item from the stack, add an extra expected input
 		// for the extra push that is required to compensate.
 		return asSmallInt(pops[0].opcode) + 1
+
+	case PubKeyHashWithAssetTy:
+		return 2
 
 	case NullDataTy:
 		fallthrough
@@ -610,6 +629,18 @@ func ExtractPkScriptAddrs(pkScript []byte, chainParams *chaincfg.Params) (Script
 			if err == nil {
 				addrs = append(addrs, addr)
 			}
+		}
+
+	case PubKeyHashWithAssetTy:
+		// A pubkeyhash_with_asset script is of the form:
+		//  OP_DUP OP_HASH160 <hash> OP_EQUALVERIFY OP_CHECKSIG 0xc0 <asset_data> OP_DROP
+		// Therefore the pubkey hash is the 3rd item on the stack.
+		// Skip the pubkey hash if it's invalid for some reason.
+		requiredSigs = 1
+		addr, err := btcutil.NewAddressPubKeyHash(pops[2].data,
+			chainParams)
+		if err == nil {
+			addrs = append(addrs, addr)
 		}
 
 	case NullDataTy:
